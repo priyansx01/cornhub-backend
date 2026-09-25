@@ -50,7 +50,7 @@ services:
         limits:
           memory: 128M
 
-  # ─── MinIO 1: Raw Video Uploads ────────────────────────────────────────────
+  # ─── MinIO: raw uploads (private) + HLS/thumbnails (public-read) buckets ───
   minio-raw:
     image: minio/minio:latest
     container_name: lms-minio-raw
@@ -64,30 +64,6 @@ services:
       - "9001:9001"    # Console UI
     volumes:
       - minio_raw_data:/data
-    healthcheck:
-      test: ["CMD", "mc", "ready", "local"]
-      interval: 5s
-      timeout: 3s
-      retries: 5
-    deploy:
-      resources:
-        limits:
-          memory: 256M
-
-  # ─── MinIO 2: HLS Processed Videos ────────────────────────────────────────
-  minio-hls:
-    image: minio/minio:latest
-    container_name: lms-minio-hls
-    restart: unless-stopped
-    command: server /data --console-address ":9003"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    ports:
-      - "9002:9000"    # S3 API
-      - "9003:9003"    # Console UI
-    volumes:
-      - minio_hls_data:/data
     healthcheck:
       test: ["CMD", "mc", "ready", "local"]
       interval: 5s
@@ -155,6 +131,5 @@ services:
 volumes:
   pgdata:
   minio_raw_data:
-  minio_hls_data:
   kafka_data:
   clickhouse_data:

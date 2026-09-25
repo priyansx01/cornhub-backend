@@ -7,8 +7,8 @@ import (
 
 	"github.com/golang-jwt/jwt/v5"
 
-	"github.com/priyansx01/smartfm-lms/internal/config"
-	"github.com/priyansx01/smartfm-lms/internal/domain"
+	"github.com/priyansx01/corn-hub-clone/internal/config"
+	"github.com/priyansx01/corn-hub-clone/internal/domain"
 )
 
 // Claims extends the standard JWT claims with LMS-specific fields.

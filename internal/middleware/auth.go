@@ -6,8 +6,8 @@ import (
 
 	"github.com/gofiber/fiber/v2"
 
-	"github.com/priyansx01/smartfm-lms/internal/auth"
-	"github.com/priyansx01/smartfm-lms/pkg/response"
+	"github.com/priyansx01/corn-hub-clone/internal/auth"
+	"github.com/priyansx01/corn-hub-clone/pkg/response"
 )
 
 // JWTAuth returns a Fiber middleware that validates the Authorization header

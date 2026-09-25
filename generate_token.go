@@ -5,8 +5,8 @@ import (
 	"time"
 
 	"github.com/golang-jwt/jwt/v5"
-	"github.com/priyansx01/smartfm-lms/internal/auth"
-	"github.com/priyansx01/smartfm-lms/internal/domain"
+	"github.com/priyansx01/corn-hub-clone/internal/auth"
+	"github.com/priyansx01/corn-hub-clone/internal/domain"
 )
 
 func main() {

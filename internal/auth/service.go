@@ -7,7 +7,7 @@ import (
 
 	"golang.org/x/crypto/bcrypt"
 
-	"github.com/priyansx01/smartfm-lms/internal/domain"
+	"github.com/priyansx01/corn-hub-clone/internal/domain"
 )
 
 var (

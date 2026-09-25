@@ -145,6 +145,6 @@ VALUES (
     'a0000000-0000-0000-0000-000000000002',
     'Test Learner',
     'learner@ismart.com',
-    '$2a$10$/66Mqcx9CuO6zR5Y1VwW8O2nTMRxSZHtCNqv8e.RhCUexKI/CApLq',
+    '$2a$10$90/8VzAM9WXmFCGF40kBL.c5YRpK/CiapiHguF.2Mlw46ITPwzIDq',
     'employee'
 ) ON CONFLICT (email) DO NOTHING;

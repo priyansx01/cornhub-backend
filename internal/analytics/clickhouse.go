@@ -8,7 +8,7 @@ import (
 
 	"github.com/ClickHouse/clickhouse-go/v2"
 	"github.com/ClickHouse/clickhouse-go/v2/lib/driver"
-	"github.com/priyansx01/smartfm-lms/internal/config"
+	"github.com/priyansx01/corn-hub-clone/internal/config"
 )
 
 // ConnectClickHouse establishes a connection to ClickHouse and initializes the schema.

@@ -9,7 +9,7 @@ import (
 
 	_ "github.com/lib/pq"
 
-	"github.com/priyansx01/smartfm-lms/internal/config"
+	"github.com/priyansx01/corn-hub-clone/internal/config"
 )
 
 // Connect establishes a PostgreSQL connection pool.

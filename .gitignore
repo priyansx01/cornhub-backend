@@ -5,3 +5,8 @@ vendor/
 *.log
 *.m3u8
 *.ts
+
+# Build outputs
+bin/
+/api
+/worker
