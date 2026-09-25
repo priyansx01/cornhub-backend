@@ -5,8 +5,9 @@ import (
 	"log"
 
 	"github.com/gofiber/fiber/v2"
-	"github.com/priyansx01/smartfm-lms/internal/domain"
-	"github.com/priyansx01/smartfm-lms/pkg/response"
+	"github.com/priyansx01/corn-hub-clone/internal/domain"
+	"github.com/priyansx01/corn-hub-clone/internal/middleware"
+	"github.com/priyansx01/corn-hub-clone/pkg/response"
 )
 
 // Handler exposes course HTTP endpoints.
@@ -21,31 +22,46 @@ func NewHandler(svc *Service) *Handler {
 
 // RegisterRoutes mounts course routes.
 func (h *Handler) RegisterRoutes(api fiber.Router) {
+	// Only instructors and admins may create or change content.
+	staff := middleware.RequireRole(string(domain.RoleInstructor), string(domain.RoleAdmin))
+
+	api.Get("/categories", h.ListCategories)
+
 	courses := api.Group("/courses")
 	courses.Get("/", h.List)
 	courses.Get("/:id", h.Get)
-	courses.Post("/", h.Create)
-	courses.Patch("/:id", h.Update)
-	courses.Delete("/:id", h.Delete)
+	courses.Post("/", staff, h.Create)
+	courses.Patch("/:id", staff, h.Update)
+	courses.Delete("/:id", staff, h.Delete)
 
 	// Modules
 	courses.Get("/:id/modules", h.ListModules)
-	courses.Post("/:id/modules", h.CreateModule)
-	courses.Delete("/:id/modules/:moduleId", h.DeleteModule)
+	courses.Post("/:id/modules", staff, h.CreateModule)
+	courses.Delete("/:id/modules/:moduleId", staff, h.DeleteModule)
 
 	// Upload + Playback
-	courses.Post("/:id/modules/:moduleId/upload", h.UploadFile)
-	courses.Post("/:id/modules/:moduleId/upload-url", h.GetUploadURL)
-	courses.Post("/:id/modules/:moduleId/upload-complete", h.CompleteUpload)
+	courses.Post("/:id/modules/:moduleId/upload", staff, h.UploadFile)
+	courses.Post("/:id/modules/:moduleId/upload-url", staff, h.GetUploadURL)
+	courses.Post("/:id/modules/:moduleId/upload-complete", staff, h.CompleteUpload)
 	courses.Get("/:id/modules/:moduleId/playback-url", h.GetPlaybackURL)
 	courses.Get("/:id/modules/:moduleId/progress", h.GetModuleProgress)
+}
+
+// visibleStatus returns the status filter to apply for the caller. Learners
+// only ever see ready courses (architecture §4.4); staff see everything they
+// ask for.
+func visibleStatus(c *fiber.Ctx) string {
+	if role, _ := c.Locals("role").(string); role == string(domain.RoleEmployee) {
+		return string(domain.CourseStatusReady)
+	}
+	return c.Query("status")
 }
 
 // ─── Course Handlers ──────────────────────────────────────────────────────────
 
 func (h *Handler) List(c *fiber.Ctx) error {
 	courses, err := h.svc.ListCourses(
-		c.Query("status"),
+		visibleStatus(c),
 		c.Query("search"),
 		c.Query("category"),
 	)
@@ -64,6 +80,17 @@ func (h *Handler) List(c *fiber.Ctx) error {
 	})
 }
 
+func (h *Handler) ListCategories(c *fiber.Ctx) error {
+	cats, err := h.svc.ListCategories(visibleStatus(c))
+	if err != nil {
+		return response.InternalError(c, "Failed to list categories")
+	}
+	if cats == nil {
+		cats = []CategoryCount{}
+	}
+	return response.OK(c, cats)
+}
+
 func (h *Handler) Get(c *fiber.Ctx) error {
 	course, err := h.svc.GetCourse(c.Params("id"))
 	if err != nil {
@@ -71,6 +98,9 @@ func (h *Handler) Get(c *fiber.Ctx) error {
 			return response.NotFound(c, "Course not found")
 		}
 		return response.InternalError(c, "Failed to get course")
+	}
+	if want := visibleStatus(c); want == string(domain.CourseStatusReady) && course.Status != domain.CourseStatusReady {
+		return response.NotFound(c, "Course not found")
 	}
 	return response.OK(c, course)
 }
@@ -87,9 +117,10 @@ func (h *Handler) Create(c *fiber.Ctx) error {
 	userID := c.Locals("user_id").(string)
 	course, err := h.svc.CreateCourse(userID, req)
 	if err != nil {
-	        return response.InternalError(c, "Failed to create course: " + err.Error())
+		return response.InternalError(c, "Failed to create course: "+err.Error())
 	}
-	return response.Created(c, course)}
+	return response.Created(c, course)
+}
 
 func (h *Handler) Update(c *fiber.Ctx) error {
 	var req CreateCourseRequest
@@ -202,14 +233,20 @@ func (h *Handler) CompleteUpload(c *fiber.Ctx) error {
 }
 
 func (h *Handler) GetPlaybackURL(c *fiber.Ctx) error {
-	url, expiresAt, err := h.svc.GetPlaybackURL(c.Params("id"), c.Params("moduleId"))
+	url, err := h.svc.GetPlaybackURL(c.Params("id"), c.Params("moduleId"))
 	if err != nil {
+		switch {
+		case errors.Is(err, ErrModuleNotFound):
+			return response.NotFound(c, "Module not found")
+		case errors.Is(err, ErrModuleNotReady):
+			return response.Error(c, fiber.StatusConflict, "Video is still processing")
+		}
 		return response.InternalError(c, "Failed to generate playback URL")
 	}
 
 	return response.OK(c, fiber.Map{
 		"playback_url": url,
-		"expires_at":   expiresAt,
+		"type":         "application/vnd.apple.mpegurl",
 	})
 }
 

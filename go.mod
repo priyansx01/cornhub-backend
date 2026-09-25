@@ -1,4 +1,4 @@
-module github.com/priyansx01/smartfm-lms
+module github.com/priyansx01/corn-hub-clone
 
 go 1.26.2
 

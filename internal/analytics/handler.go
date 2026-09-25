@@ -2,7 +2,7 @@ package analytics
 
 import (
 	"github.com/gofiber/fiber/v2"
-	"github.com/priyansx01/smartfm-lms/pkg/response"
+	"github.com/priyansx01/corn-hub-clone/pkg/response"
 )
 
 type Handler struct {

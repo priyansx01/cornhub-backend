@@ -18,14 +18,14 @@ import (
 	"github.com/gofiber/fiber/v2/middleware/logger"
 	"github.com/gofiber/fiber/v2/middleware/recover"
 
-	"github.com/priyansx01/smartfm-lms/internal/analytics"
-	"github.com/priyansx01/smartfm-lms/internal/auth"
-	"github.com/priyansx01/smartfm-lms/internal/config"
-	"github.com/priyansx01/smartfm-lms/internal/course"
-	"github.com/priyansx01/smartfm-lms/internal/database"
-	"github.com/priyansx01/smartfm-lms/internal/event"
-	"github.com/priyansx01/smartfm-lms/internal/middleware"
-	"github.com/priyansx01/smartfm-lms/internal/storage"
+	"github.com/priyansx01/corn-hub-clone/internal/analytics"
+	"github.com/priyansx01/corn-hub-clone/internal/auth"
+	"github.com/priyansx01/corn-hub-clone/internal/config"
+	"github.com/priyansx01/corn-hub-clone/internal/course"
+	"github.com/priyansx01/corn-hub-clone/internal/database"
+	"github.com/priyansx01/corn-hub-clone/internal/event"
+	"github.com/priyansx01/corn-hub-clone/internal/middleware"
+	"github.com/priyansx01/corn-hub-clone/internal/storage"
 )
 
 func main() {

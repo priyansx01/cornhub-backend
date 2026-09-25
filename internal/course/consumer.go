@@ -10,9 +10,9 @@ import (
 	"github.com/ThreeDotsLabs/watermill-kafka/v3/pkg/kafka"
 	"github.com/ThreeDotsLabs/watermill/message"
 
-	"github.com/priyansx01/smartfm-lms/internal/config"
-	"github.com/priyansx01/smartfm-lms/internal/domain"
-	"github.com/priyansx01/smartfm-lms/internal/event"
+	"github.com/priyansx01/corn-hub-clone/internal/config"
+	"github.com/priyansx01/corn-hub-clone/internal/domain"
+	"github.com/priyansx01/corn-hub-clone/internal/event"
 )
 
 type Consumer struct {

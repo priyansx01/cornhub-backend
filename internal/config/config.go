@@ -10,11 +10,11 @@ import (
 
 // Config holds all application configuration.
 type Config struct {
-	App      AppConfig
-	DB       DBConfig
-	Redis    RedisConfig
-	JWT      JWTConfig
-	MinIO    MinIOConfig
+	App        AppConfig
+	DB         DBConfig
+	Redis      RedisConfig
+	JWT        JWTConfig
+	MinIO      MinIOConfig
 	Kafka      KafkaConfig
 	ClickHouse ClickHouseConfig
 	CORS       CORSConfig
@@ -74,6 +74,9 @@ type MinIOConfig struct {
 	RawBucket        string
 	HLSBucket        string
 	ThumbnailsBucket string
+	// PublicURL is the base URL players use to fetch HLS/thumbnail objects
+	// (e.g. https://cdn.example.com); it may differ from the internal Endpoint.
+	PublicURL string
 }
 
 type KafkaConfig struct {
@@ -120,12 +123,13 @@ func Load() *Config {
 			RawBucket:        getEnv("MINIO_RAW_BUCKET", "lms-raw-videos"),
 			HLSBucket:        getEnv("MINIO_HLS_BUCKET", "lms-hls-videos"),
 			ThumbnailsBucket: getEnv("MINIO_THUMBNAILS_BUCKET", "lms-thumbnails"),
+			PublicURL:        getEnv("MINIO_PUBLIC_URL", "http://localhost:9000"),
 		},
 		Kafka: KafkaConfig{
 			Brokers: getEnv("KAFKA_BROKERS", "localhost:9092"),
 		},
 		ClickHouse: ClickHouseConfig{
-			Addr:     getEnv("CLICKHOUSE_ADDR", "localhost:9000"),
+			Addr:     getEnv("CLICKHOUSE_ADDR", "localhost:9004"),
 			User:     getEnv("CLICKHOUSE_USER", "lms"),
 			Password: getEnv("CLICKHOUSE_PASSWORD", "lms_secret"),
 			Database: getEnv("CLICKHOUSE_DB", "smartfm_analytics"),

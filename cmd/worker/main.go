@@ -7,10 +7,10 @@ import (
 	"os/signal"
 	"syscall"
 
-	"github.com/priyansx01/smartfm-lms/internal/config"
-	"github.com/priyansx01/smartfm-lms/internal/event"
-	"github.com/priyansx01/smartfm-lms/internal/storage"
-	"github.com/priyansx01/smartfm-lms/internal/worker"
+	"github.com/priyansx01/corn-hub-clone/internal/config"
+	"github.com/priyansx01/corn-hub-clone/internal/event"
+	"github.com/priyansx01/corn-hub-clone/internal/storage"
+	"github.com/priyansx01/corn-hub-clone/internal/worker"
 )
 
 func main() {

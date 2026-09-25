@@ -8,19 +8,21 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/priyansx01/smartfm-lms/internal/domain"
-	"github.com/priyansx01/smartfm-lms/internal/event"
-	"github.com/priyansx01/smartfm-lms/internal/storage"
+	"github.com/priyansx01/corn-hub-clone/internal/domain"
+	"github.com/priyansx01/corn-hub-clone/internal/event"
+	"github.com/priyansx01/corn-hub-clone/internal/storage"
 )
 
 var (
 	ErrCourseNotFound = errors.New("course not found")
 	ErrModuleNotFound = errors.New("module not found")
+	ErrModuleNotReady = errors.New("module video is not ready")
 )
 
 // Service provides course business logic.
@@ -47,7 +49,9 @@ type CreateCourseRequest struct {
 	Tags        []string `json:"tags,omitempty"`
 }
 
-// ListCourses returns all courses with optional filtering.
+// ListCourses returns courses with optional filtering. Archived courses are
+// hidden unless explicitly requested via status. Category matching is
+// case-insensitive.
 func (s *Service) ListCourses(status, search, category string) ([]domain.Course, error) {
 	query := `SELECT id, created_by, title, description, category, level, status, 
 	          hls_url, thumbnail_url, duration_seconds, created_at, updated_at 
@@ -59,6 +63,8 @@ func (s *Service) ListCourses(status, search, category string) ([]domain.Course,
 		query += fmt.Sprintf(" AND status = $%d", idx)
 		args = append(args, status)
 		idx++
+	} else {
+		query += fmt.Sprintf(" AND status <> '%s'", domain.CourseStatusArchived)
 	}
 	if search != "" {
 		query += fmt.Sprintf(" AND (title ILIKE $%d OR description ILIKE $%d)", idx, idx)
@@ -66,8 +72,8 @@ func (s *Service) ListCourses(status, search, category string) ([]domain.Course,
 		idx++
 	}
 	if category != "" {
-		query += fmt.Sprintf(" AND category = $%d", idx)
-		args = append(args, category)
+		query += fmt.Sprintf(" AND LOWER(category) = LOWER($%d)", idx)
+		args = append(args, strings.TrimSpace(category))
 		idx++
 	}
 	query += " ORDER BY created_at DESC"
@@ -91,6 +97,43 @@ func (s *Service) ListCourses(status, search, category string) ([]domain.Course,
 		courses = append(courses, c)
 	}
 	return courses, nil
+}
+
+// CategoryCount is a category name with the number of courses in it.
+type CategoryCount struct {
+	Name        string `json:"name"`
+	CourseCount int    `json:"course_count"`
+}
+
+// ListCategories returns the distinct, non-empty categories of courses with
+// the given status (all non-archived courses when status is empty), so the
+// client can render a category filter.
+func (s *Service) ListCategories(status string) ([]CategoryCount, error) {
+	query := `SELECT MIN(category), COUNT(*) FROM courses WHERE TRIM(category) <> ''`
+	args := []interface{}{}
+	if status != "" {
+		query += " AND status = $1"
+		args = append(args, status)
+	} else {
+		query += fmt.Sprintf(" AND status <> '%s'", domain.CourseStatusArchived)
+	}
+	query += " GROUP BY LOWER(category) ORDER BY LOWER(category)"
+
+	rows, err := s.db.Query(query, args...)
+	if err != nil {
+		return nil, fmt.Errorf("list categories: %w", err)
+	}
+	defer rows.Close()
+
+	var cats []CategoryCount
+	for rows.Next() {
+		var c CategoryCount
+		if err := rows.Scan(&c.Name, &c.CourseCount); err != nil {
+			return nil, fmt.Errorf("scan category: %w", err)
+		}
+		cats = append(cats, c)
+	}
+	return cats, rows.Err()
 }
 
 // GetCourse returns a single course by ID.
@@ -232,14 +275,28 @@ func (s *Service) GetUploadURL(courseID, moduleID, fileName string) (string, str
 	return url, objectKey, nil
 }
 
-// GetPlaybackURL returns a presigned playback URL for an HLS stream.
-func (s *Service) GetPlaybackURL(courseID, moduleID string) (string, time.Time, error) {
-	ttl := 4 * time.Hour
-	url, err := s.storage.HLSPlaybackURL(courseID, moduleID, ttl)
+// GetPlaybackURL returns the HLS master playlist URL for a ready module.
+// The HLS bucket is public-read, so the URL does not expire; a presigned URL
+// would only cover master.m3u8 and the player would get 403 on the variant
+// playlists and segments it references.
+func (s *Service) GetPlaybackURL(courseID, moduleID string) (string, error) {
+	var status string
+	var hlsURL sql.NullString
+	err := s.db.QueryRow(`SELECT status, hls_url FROM modules WHERE id = $1 AND course_id = $2`,
+		moduleID, courseID).Scan(&status, &hlsURL)
 	if err != nil {
-		return "", time.Time{}, err
+		if errors.Is(err, sql.ErrNoRows) {
+			return "", ErrModuleNotFound
+		}
+		return "", fmt.Errorf("get module: %w", err)
 	}
-	return url, time.Now().Add(ttl), nil
+	if status != string(domain.CourseStatusReady) {
+		return "", ErrModuleNotReady
+	}
+	if hlsURL.Valid && hlsURL.String != "" {
+		return hlsURL.String, nil
+	}
+	return s.storage.HLSMasterURL(courseID, moduleID), nil
 }
 
 // UploadModuleFile handles direct file upload and triggers processing.

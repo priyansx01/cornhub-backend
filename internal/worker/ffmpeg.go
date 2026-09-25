@@ -19,9 +19,9 @@ import (
 	"github.com/ThreeDotsLabs/watermill/message"
 	"github.com/redis/go-redis/v9"
 
-	"github.com/priyansx01/smartfm-lms/internal/config"
-	"github.com/priyansx01/smartfm-lms/internal/event"
-	"github.com/priyansx01/smartfm-lms/internal/storage"
+	"github.com/priyansx01/corn-hub-clone/internal/config"
+	"github.com/priyansx01/corn-hub-clone/internal/event"
+	"github.com/priyansx01/corn-hub-clone/internal/storage"
 )
 
 type VideoProcessor struct {
@@ -85,74 +85,77 @@ func (vp *VideoProcessor) handleMessage(ctx context.Context, msg *message.Messag
 	}
 
 	log.Printf("⚙️ Processing video for course %s, module %s...", ev.CourseID, ev.ModuleID)
+	if err := vp.process(ctx, ev); err != nil {
+		// Transcoding failures are almost always deterministic (bad input, missing
+		// object), so redelivering would loop forever. Surface the failure through
+		// the progress endpoint and move on.
+		log.Printf("❌ Processing failed for module %s: %v", ev.ModuleID, err)
+		vp.updateProgress(ctx, ev.ModuleID, 0, "failed")
+		msg.Ack()
+		return
+	}
+	msg.Ack()
+}
+
+func (vp *VideoProcessor) process(ctx context.Context, ev event.VideoUploadedEvent) error {
 	vp.updateProgress(ctx, ev.ModuleID, 0, "downloading")
 
 	// 1. Create a temp directory
 	tmpDir, err := os.MkdirTemp("", "ffmpeg-lms-*")
 	if err != nil {
-		log.Printf("❌ Failed to create temp dir: %v", err)
-		msg.Nack()
-		return
+		return fmt.Errorf("create temp dir: %w", err)
 	}
 	defer os.RemoveAll(tmpDir)
 
-	inputPath := filepath.Join(tmpDir, "input.mp4")
+	inputPath := filepath.Join(tmpDir, "input"+filepath.Ext(ev.MinioKey))
 
 	// 2. Download video
 	if err := vp.storage.DownloadRawFile(ctx, ev.MinioKey, inputPath); err != nil {
-		log.Printf("❌ Failed to download raw file: %v", err)
-		msg.Nack()
-		return
+		return fmt.Errorf("download raw file: %w", err)
 	}
 
 	vp.updateProgress(ctx, ev.ModuleID, 5, "probing")
 
-	// 3. Get duration
+	// 3. Probe duration and streams
 	durationStr, err := getDuration(inputPath)
 	if err != nil {
-		log.Printf("❌ Failed to get duration: %v", err)
-		msg.Nack()
-		return
+		return fmt.Errorf("probe duration: %w", err)
 	}
 	totalSeconds, _ := strconv.ParseFloat(durationStr, 64)
+	withAudio, err := hasAudio(inputPath)
+	if err != nil {
+		return fmt.Errorf("probe audio: %w", err)
+	}
 
 	vp.updateProgress(ctx, ev.ModuleID, 10, "transcoding")
 
 	// 4. Transcode
 	outDir := filepath.Join(tmpDir, "hls")
-	os.MkdirAll(outDir, 0755)
+	if err := os.MkdirAll(outDir, 0755); err != nil {
+		return fmt.Errorf("create output dir: %w", err)
+	}
 
-	cmd := exec.Command("ffmpeg", "-y", "-i", inputPath,
-		"-filter_complex", "[0:v]split=4[v1080][v720][v480][v360]; [v1080]scale=w=1920:h=1080:force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2[v1080out]; [v720]scale=w=1280:h=720:force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2[v720out]; [v480]scale=w=854:h=480:force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2[v480out]; [v360]scale=w=640:h=360:force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2[v360out]",
-		"-map", "[v1080out]", "-map", "0:a", "-c:v:0", "libx264", "-preset", "ultrafast", "-profile:v:0", "high", "-crf", "20", "-maxrate:v:0", "5350k", "-bufsize:v:0", "7500k", "-g", "48", "-keyint_min", "48", "-sc_threshold", "0",
-		"-map", "[v720out]", "-map", "0:a", "-c:v:1", "libx264", "-preset", "ultrafast", "-profile:v:1", "high", "-crf", "21", "-maxrate:v:1", "3000k", "-bufsize:v:1", "4200k", "-g", "48", "-keyint_min", "48", "-sc_threshold", "0",
-		"-map", "[v480out]", "-map", "0:a", "-c:v:2", "libx264", "-preset", "ultrafast", "-profile:v:2", "main", "-crf", "22", "-maxrate:v:2", "1500k", "-bufsize:v:2", "2100k", "-g", "48", "-keyint_min", "48", "-sc_threshold", "0",
-		"-map", "[v360out]", "-map", "0:a", "-c:v:3", "libx264", "-preset", "ultrafast", "-profile:v:3", "baseline", "-crf", "23", "-maxrate:v:3", "856k", "-bufsize:v:3", "1200k", "-g", "48", "-keyint_min", "48", "-sc_threshold", "0",
-		"-c:a", "aac", "-b:a", "128k", "-ac", "2",
-		"-f", "hls", "-hls_time", "6", "-hls_playlist_type", "vod", "-hls_flags", "independent_segments", "-hls_segment_type", "mpegts",
-		"-hls_segment_filename", filepath.Join(outDir, "v%v_segment_%03d.ts"),
-		"-master_pl_name", "master.m3u8",
-		"-var_stream_map", "v:0,a:0 v:1,a:1 v:2,a:2 v:3,a:3",
-		filepath.Join(outDir, "v%v_index.m3u8"),
-	)
+	cmd := exec.CommandContext(ctx, "ffmpeg", BuildHLSArgs(inputPath, outDir, withAudio)...)
 
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
-		log.Printf("❌ Failed to pipe stderr: %v", err)
-		msg.Nack()
-		return
+		return fmt.Errorf("pipe stderr: %w", err)
 	}
 
 	if err := cmd.Start(); err != nil {
-		log.Printf("❌ Failed to start ffmpeg: %v", err)
-		msg.Nack()
-		return
+		return fmt.Errorf("start ffmpeg: %w", err)
 	}
 
+	// Keep the tail of stderr so a failure is diagnosable from the worker log.
+	var tail []string
 	timeRe := regexp.MustCompile(`time=([0-9]{2}):([0-9]{2}):([0-9]{2}\.[0-9]{2})`)
 	scanner := bufio.NewScanner(stderr)
+	scanner.Split(scanLinesOrCR)
 	for scanner.Scan() {
 		line := scanner.Text()
+		if tail = append(tail, line); len(tail) > 10 {
+			tail = tail[1:]
+		}
 		matches := timeRe.FindStringSubmatch(line)
 		if len(matches) == 4 {
 			h, _ := strconv.ParseFloat(matches[1], 64)
@@ -170,22 +173,30 @@ func (vp *VideoProcessor) handleMessage(ctx context.Context, msg *message.Messag
 	}
 
 	if err := cmd.Wait(); err != nil {
-		log.Printf("❌ FFmpeg failed: %v", err)
-		msg.Nack()
-		return
+		return fmt.Errorf("ffmpeg: %w\n%s", err, strings.Join(tail, "\n"))
 	}
 
 	vp.updateProgress(ctx, ev.ModuleID, 90, "thumbnailing")
 
-	// 5. Generate Thumbnail
+	// 5. Generate Thumbnail (non-fatal: very short clips may have no frame at 1s)
 	thumbPath := filepath.Join(tmpDir, "thumb.jpg")
-	exec.Command("ffmpeg", "-y", "-i", inputPath, "-ss", "00:00:01.000", "-vframes", "1", thumbPath).Run()
+	thumbAt := "00:00:01.000"
+	if totalSeconds < 2 {
+		thumbAt = "00:00:00.000"
+	}
+	if out, err := exec.CommandContext(ctx, "ffmpeg", "-y", "-ss", thumbAt, "-i", inputPath, "-vframes", "1", thumbPath).CombinedOutput(); err != nil {
+		log.Printf("⚠ Thumbnail generation failed for module %s: %v\n%s", ev.ModuleID, err, out)
+		thumbPath = ""
+	}
 
 	vp.updateProgress(ctx, ev.ModuleID, 95, "uploading")
 
 	// 6. Upload files to MinIO
-	hlsPrefix := fmt.Sprintf("courses/%s/%s", ev.CourseID, ev.ModuleID)
-	files, _ := filepath.Glob(filepath.Join(outDir, "*"))
+	hlsPrefix := storage.HLSPrefix(ev.CourseID, ev.ModuleID)
+	files, err := filepath.Glob(filepath.Join(outDir, "*"))
+	if err != nil {
+		return fmt.Errorf("list hls output: %w", err)
+	}
 	for _, f := range files {
 		fileName := filepath.Base(f)
 		objectKey := fmt.Sprintf("%s/%s", hlsPrefix, fileName)
@@ -193,20 +204,26 @@ func (vp *VideoProcessor) handleMessage(ctx context.Context, msg *message.Messag
 		if strings.HasSuffix(fileName, ".m3u8") {
 			contentType = "application/vnd.apple.mpegurl"
 		}
-		vp.storage.UploadHLSFile(ctx, objectKey, f, contentType)
+		if err := vp.storage.UploadHLSFile(ctx, objectKey, f, contentType); err != nil {
+			return err
+		}
 	}
 
-	thumbObjectKey := fmt.Sprintf("courses/%s/%s/thumb.jpg", ev.CourseID, ev.ModuleID)
-	vp.storage.UploadThumbnail(ctx, thumbObjectKey, thumbPath, "image/jpeg")
+	var thumbnailURL string
+	if thumbPath != "" {
+		thumbObjectKey := hlsPrefix + "/thumb.jpg"
+		if err := vp.storage.UploadThumbnail(ctx, thumbObjectKey, thumbPath, "image/jpeg"); err != nil {
+			log.Printf("⚠ Thumbnail upload failed for module %s: %v", ev.ModuleID, err)
+		} else {
+			thumbnailURL = vp.storage.ThumbnailURL(thumbObjectKey)
+		}
+	}
 
 	// 7. Publish success
-	hlsURL := fmt.Sprintf("http://localhost:9002/%s/courses/%s/%s/master.m3u8", vp.cfg.MinIO.HLSBucket, ev.CourseID, ev.ModuleID)
-	thumbnailURL := fmt.Sprintf("http://localhost:9000/%s/courses/%s/%s/thumb.jpg", vp.cfg.MinIO.ThumbnailsBucket, ev.CourseID, ev.ModuleID)
-
 	processedEv := event.VideoProcessedEvent{
 		CourseID:        ev.CourseID,
 		ModuleID:        ev.ModuleID,
-		HLSUrl:          hlsURL,
+		HLSUrl:          vp.storage.HLSMasterURL(ev.CourseID, ev.ModuleID),
 		ThumbnailUrl:    thumbnailURL,
 		DurationSeconds: int(totalSeconds),
 		Status:          "ready",
@@ -214,15 +231,77 @@ func (vp *VideoProcessor) handleMessage(ctx context.Context, msg *message.Messag
 
 	if vp.pub != nil {
 		if err := vp.pub.PublishJSON(ctx, event.TopicVideoProcessed, processedEv); err != nil {
-			log.Printf("❌ Failed to publish processed event: %v", err)
-			msg.Nack()
-			return
+			return fmt.Errorf("publish processed event: %w", err)
 		}
 	}
 
 	vp.updateProgress(ctx, ev.ModuleID, 100, "ready")
 	log.Printf("✅ Processing complete for course %s, module %s.", ev.CourseID, ev.ModuleID)
-	msg.Ack()
+	return nil
+}
+
+// rendition is one rung of the HLS adaptive bitrate ladder.
+type rendition struct {
+	width, height int
+	profile       string
+	crf           int
+	maxrate       string
+	bufsize       string
+}
+
+var ladder = []rendition{
+	{1920, 1080, "high", 20, "5350k", "7500k"},
+	{1280, 720, "high", 21, "3000k", "4200k"},
+	{854, 480, "main", 22, "1500k", "2100k"},
+	{640, 360, "baseline", 23, "856k", "1200k"},
+}
+
+// BuildHLSArgs returns the ffmpeg arguments that transcode inputPath into a
+// multi-bitrate HLS stream (master.m3u8 + one playlist per rendition) in outDir.
+// Audio is mapped only when the source has an audio track; mapping a missing
+// stream makes ffmpeg abort.
+func BuildHLSArgs(inputPath, outDir string, withAudio bool) []string {
+	splits := make([]string, len(ladder))
+	scales := make([]string, len(ladder))
+	for i, r := range ladder {
+		splits[i] = fmt.Sprintf("[v%d]", i)
+		// format=yuv420p: browsers only decode 4:2:0 H.264, and x264's
+		// high/main/baseline profiles reject 4:2:2/4:4:4 input.
+		scales[i] = fmt.Sprintf("[v%d]scale=w=%d:h=%d:force_original_aspect_ratio=decrease,pad=ceil(iw/2)*2:ceil(ih/2)*2,format=yuv420p[v%dout]",
+			i, r.width, r.height, i)
+	}
+	filter := fmt.Sprintf("[0:v]split=%d%s; %s", len(ladder), strings.Join(splits, ""), strings.Join(scales, "; "))
+
+	args := []string{"-y", "-i", inputPath, "-filter_complex", filter}
+	streamMap := make([]string, len(ladder))
+	for i, r := range ladder {
+		args = append(args, "-map", fmt.Sprintf("[v%dout]", i))
+		if withAudio {
+			args = append(args, "-map", "0:a:0")
+			streamMap[i] = fmt.Sprintf("v:%d,a:%d", i, i)
+		} else {
+			streamMap[i] = fmt.Sprintf("v:%d", i)
+		}
+		args = append(args,
+			fmt.Sprintf("-c:v:%d", i), "libx264",
+			fmt.Sprintf("-profile:v:%d", i), r.profile,
+			fmt.Sprintf("-crf:v:%d", i), strconv.Itoa(r.crf),
+			fmt.Sprintf("-maxrate:v:%d", i), r.maxrate,
+			fmt.Sprintf("-bufsize:v:%d", i), r.bufsize,
+		)
+	}
+	args = append(args, "-preset", "ultrafast", "-g", "48", "-keyint_min", "48", "-sc_threshold", "0")
+	if withAudio {
+		args = append(args, "-c:a", "aac", "-b:a", "128k", "-ac", "2")
+	}
+	args = append(args,
+		"-f", "hls", "-hls_time", "6", "-hls_playlist_type", "vod", "-hls_flags", "independent_segments", "-hls_segment_type", "mpegts",
+		"-hls_segment_filename", filepath.Join(outDir, "v%v_segment_%03d.ts"),
+		"-master_pl_name", "master.m3u8",
+		"-var_stream_map", strings.Join(streamMap, " "),
+		filepath.Join(outDir, "v%v_index.m3u8"),
+	)
+	return args
 }
 
 func (vp *VideoProcessor) updateProgress(ctx context.Context, moduleID string, percent int, status string) {
@@ -241,4 +320,27 @@ func getDuration(filePath string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(string(out)), nil
+}
+
+func hasAudio(filePath string) (bool, error) {
+	cmd := exec.Command("ffprobe", "-v", "error", "-select_streams", "a", "-show_entries", "stream=index", "-of", "csv=p=0", filePath)
+	out, err := cmd.Output()
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(string(out)) != "", nil
+}
+
+// scanLinesOrCR splits on \n or \r: ffmpeg rewrites its progress line in place
+// with \r, so a plain line scanner would only see progress once ffmpeg exits.
+func scanLinesOrCR(data []byte, atEOF bool) (advance int, token []byte, err error) {
+	for i, b := range data {
+		if b == '\n' || b == '\r' {
+			return i + 1, data[:i], nil
+		}
+	}
+	if atEOF && len(data) > 0 {
+		return len(data), data, nil
+	}
+	return 0, nil, nil
 }
